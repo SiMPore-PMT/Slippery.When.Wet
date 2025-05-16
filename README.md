@@ -1,10 +1,10 @@
 # Slippery.When.Wet
 
-![OSHA Violation Pending](https://img.shields.io/badge/status-OSHA%20Violation%20Pending-red?style=for-the-badge&logo=datadog&logoColor=white)
-![Glove Mode](https://img.shields.io/badge/glove_mode-enabled-blue?style=flat-square)
-![Build](https://img.shields.io/badge/build-unstable-yellow?style=flat-square)
-![pH Level](https://img.shields.io/badge/pH-1.0-brightgreen?style=flat-square)
-![License](https://img.shields.io/badge/license-dont%20@%20me-lightgrey?style=flat-square)
+[![OSHA Violation Pending](https://img.shields.io/badge/status-OSHA%20Violation%20Pending-red?style=flat&logo=datadog&logoColor=white&labelColor=black&color=red&label=status)]() 
+[![Glove Mode](https://img.shields.io/badge/glove_mode-enabled-blue?style=flat&color=0077ff)]()  
+[![Build](https://img.shields.io/badge/build-unstable-yellow?style=flat&color=ffcc00)]()  
+[![pH Level](https://img.shields.io/badge/pH-1.0-brightgreen?style=flat&color=44cc11)]()  
+[![License](https://img.shields.io/badge/license-don't%20@%20me-lightgrey?style=flat&color=999999)]()
 [![Drowning](https://img.shields.io/badge/safety-probably%20not-orange)](https://youtu.be/dQw4w9WgXcQ)
 
 
