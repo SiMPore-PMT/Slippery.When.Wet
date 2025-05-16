@@ -3,6 +3,8 @@
 _A wet bench control and monitoring suite._  
 Designed for managing chemical processes, rinse cycles, and safety interlocks on custom-built or retrofitted wet bench stations.
 
+
+
 ---
 
 ## 🧪 Overview
@@ -16,11 +18,15 @@ This repository houses the firmware, interface logic, and supporting scripts for
 
 > _Note: This repo does not currently include real-time video monitoring of splash zones. That feature is pending further trauma._
 
+
+
 ---
 
 ## 💡 Features
 
 - UMMMMM this is for someone else to fill out
+
+
 
 ---
 
@@ -32,11 +38,15 @@ While some safeguards are implemented, **this code assumes you know what you're 
 - Void PPE  
 - Sudden reappearance of your chem lab PTSD
 
+
+
 ---
 
 ## 📜 License
 
 don't got one, don't need one. So if you blow up your cleanroom, don't @ me.
+
+
 
 ---
 
@@ -44,3 +54,5 @@ don't got one, don't need one. So if you blow up your cleanroom, don't @ me.
 
 If you're wondering where the name came from:  
 No context, just OSHA violations.
+
+
