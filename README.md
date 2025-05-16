@@ -5,6 +5,8 @@
 ![Build](https://img.shields.io/badge/build-unstable-yellow?style=flat-square)
 ![pH Level](https://img.shields.io/badge/pH-1.0-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-dont%20@%20me-lightgrey?style=flat-square)
+[![Drowning](https://img.shields.io/badge/safety-probably%20not-orange)](https://youtu.be/dQw4w9WgXcQ)
+
 
 _150 LGD wet bench control and monitoring suite._  
 Designed for managing chemical processes, rinse cycles, and safety interlocks on custom-built or retrofitted wet bench stations.
