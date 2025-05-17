@@ -31,6 +31,15 @@ volatile bool timerFlag = false;
 #define PH_SENSOR_RX_PIN     11     // SoftwareSerial RX pin for pH sensor
 #define PH_SENSOR_TX_PIN     12     // SoftwareSerial TX pin for pH sensor
 
+//Forward declerations: for platform.io, could be in a header
+void    handleFlushButton();
+float   readPH();
+bool    isPHWithinAcceptableRange(float phValue);
+bool    pauseableDelay(unsigned long ms);
+void    adjustPH();
+void    flushTank();
+// ───────────────────────────────────────────────────────────────────
+
 // Create a SoftwareSerial object for communication with the Atlas Scientific pH sensor
 SoftwareSerial phSensorSerial(PH_SENSOR_RX_PIN, PH_SENSOR_TX_PIN);
 
@@ -139,6 +148,7 @@ void adjustPH() {
   }
 
   // Execute the corresponding acid/base adjustment based on the pH range.
+
   switch (adjustmentCase) {
     case 1: // pH > 11: Extreme high pH, add acid
       digitalWrite(ACID_RELAY_PIN, HIGH);
@@ -559,6 +569,7 @@ void loop() {
       digitalWrite(MIXING_RELAY_PIN, HIGH);  // Start mixing
       
       // Replace long delays with pauseableDelay calls for initial mix
+      //DAK - Imma be real something broke here
       for (int i = 0; i < 5; i++) {
         if (!pauseableDelay(5000)) {
           digitalWrite(MIXING_RELAY_PIN, LOW);
@@ -567,11 +578,12 @@ void loop() {
         #if defined(__AVR__)
           wdt_reset();
         #endif
+        
+        digitalWrite(MIXING_RELAY_PIN, LOW);   // Stop mixing
+        #if defined(__AVR__)
+          wdt_reset();
+        #endif
       }
-      digitalWrite(MIXING_RELAY_PIN, LOW);   // Stop mixing
-      #if defined(__AVR__)
-        wdt_reset();
-      #endif
       lcd.clear();
       initialMixRequired = false;
     } 
