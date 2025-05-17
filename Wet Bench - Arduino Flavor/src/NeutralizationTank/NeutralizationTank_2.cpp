@@ -39,10 +39,8 @@ SoftwareSerial phSensorSerial(PH_SENSOR_RX_PIN, PH_SENSOR_TX_PIN);
 SoftwareSerial phSensorSerial(PH_SENSOR_RX_PIN, PH_SENSOR_TX_PIN);
 
 // Global variables for system state, sensor readings, and commands
-bool isPHAcceptable = true;            // Flag indicating if the current pH is within acceptable range
-bool tankFlushed = false;              // Flag indicating whether the tank flush process has been completed
-int unusedPHValue;                     // Unused variable for pH value (legacy)
-float sensorVoltage;                   // Unused variable for sensor voltage
+// bool isPHAcceptable = true;            // Flag indicating if the current pH is within acceptable range
+// bool tankFlushed = false;              // Flag indicating whether the tank flush process has been completed
 String phReadCommand = "R";            // Command to request a pH reading from the sensor
 String pcInputBuffer = "";             // Buffer for incoming data from the PC (not used)
 String phSensorResponseBuffer = "";    // Buffer for data received from the pH sensor
@@ -108,9 +106,7 @@ void setup() {
   phSensorSerial.print("R \r");
 }
 
-enum SYSTEM_STATE{IDLE, NEUTRALIZING, FLUSHING}; //System state enums for the entire neutralization system
-enum NEUTRALIZING_STATE{MIXING, CHEM_DEP};   //Neutralizing specific state variables (basically sub states), default state should be mixing 
-
+enum SYSTEM_STATE {IDLE, NEUTRALIZING, FLUSHING}; //System state enums for the entire neutralization system
 
 SYSTEM_STATE systemState = IDLE;
 NEUTRALIZING_STATE neutralizingState = MIXING;
@@ -129,8 +125,8 @@ void loop(){
             case IDLE:
                 //prolly better way of doing this (ensure neutralizing vars are reset for next round)
                 mixCount = 0;
-                initialMixComplete = false;
-                neutralizingState = MIXING;
+                initialMixComplete = false; //ensure initial Mix time is first mix
+                neutralizingState = MIXING; //always make sure we start with mixing first
 
                 break;
 
@@ -162,22 +158,27 @@ struct pH_caseAdjusments{
     double chemDep_Cnt_Sec; //amount of time to dump acid/base for given case can do half second incraments. Note: chem choice dependent on pH_trigger range (ie >7 acid is used)
 };
 
-//---- Base Case Adjustments (we are adding acid)
-struct pH_caseAdjusments pH_mild_BASE_case = {9.5, 1, 2};           //Base of 9.5 - 10.5, add acid for 2 seconds
-struct pH_caseAdjusments pH_medium_BASE_case = {10.5, 0.5, 3};      //Base of 10.5 - 11, add acid for 3 seconds
-struct pH_caseAdjusments pH_spicy_BASE_case = {11, 3, 10};          //Base of 11 -14, add acid for 10 seconds ????
+pH_caseAdjusments selectedCaseAdjustment;
 
-//---- Acid Case Adjustments (we are adding base)
-struct pH_caseAdjusments pH_mild_ACID_case = {5.5, 0.5, 1};         //Acid of 5.5 - 5, add base for 1 seconds
-struct pH_caseAdjusments pH_medium_ACID_case = {5, 0.5, 1.5};       //Acid of 5 - 4.5, add base for 1.5 seconds
-struct pH_caseAdjusments pH_mediumHigh_ACID_case = {4.5, 0.5, 2};   //Acid of 4.5 - 4, add base for 2 seconds
-struct pH_caseAdjusments pH_high_ACID_case = {4, 0.5, 3};           //Acid of 4 - 3.5, add base for 3 seconds
-struct pH_caseAdjusments pH_spicy_ACID_case = {3.5, 0.5, 4};        //Acid of 3.5 - 3, add base for 4 seconds
-struct pH_caseAdjusments pH_DeepFried_ACID_case = {3, 2, 8};        //Acid of 3 - 1, add base for 8 seconds
+const int totalNumCases = 9;
+pH_caseAdjusments caseArray[totalNumCases] = {
+    //---- Base Case Adjustments (we are adding acid)
+    {9.5, 1, 2},           //Base of 9.5 - 10.5, add acid for 2 seconds
+    {10.5, 0.5, 3},      //Base of 10.5 - 11, add acid for 3 seconds
+    {11, 3, 10},          //Base of 11 -14, add acid for 10 seconds ????
+
+    //---- Acid Case Adjustments (we are adding base)
+    {5.5, 0.5, 1},         //Acid of 5.5 - 5, add base for 1 seconds
+    {5, 0.5, 1.5},       //Acid of 5 - 4.5, add base for 1.5 seconds
+    {4.5, 0.5, 2},   //Acid of 4.5 - 4, add base for 2 seconds
+    {4, 0.5, 3},           //Acid of 4 - 3.5, add base for 3 seconds
+    {3.5, 0.5, 4},        //Acid of 3.5 - 3, add base for 4 seconds
+    {3, 2, 8}        //Acid of 3 - 1, add base for 8 seconds
+};
+ 
 
 
 void neutralizeSystem(){
-
     switch(neutralizingState){
         case MIXING:
             //TODO
@@ -186,8 +187,9 @@ void neutralizeSystem(){
             //if initialMixComplete == true, we compare against systemMix, otherweise we compare against initial mix
             //If mix counter is complete, move to chemical deposition, note, we must first return to the main loop
             if(mixCount > (initialMixComplete? systemMix_MAX_CNT_SEC : initialMix_MAX_CNT_SEC)){
-                if(!initialMixComplete) {initialMixComplete = true;} //ensure if this was the initial mix to change timing
+                if(!initialMixComplete) {initialMixComplete = true;} //ensure if this was the initial mix to change timing, could just always set to true (latch that bitch)
                 mixCount = 0;
+                selectedCaseAdjustment = getCaseAdjustment(100); //TODO pass the currentPH
                 //TODO disable timer
 
                 neutralizingState = CHEM_DEP;
@@ -195,10 +197,74 @@ void neutralizeSystem(){
             break;
 
         case CHEM_DEP:
-            //TODO process chemical dumping based on current pH
-            neutralizingState = MIXING;
+            //TODO ensure timer is enabled
+            //TODO add back up timeStamp
+            int chemcialRelayPin = (selectedCaseAdjustment.pH_trigger > 7)? BASE_RELAY_PIN : ACID_RELAY_PIN; //determine the type of chem we are correcting with (BASE or ACID)
+            digitalWrite(chemcialRelayPin, HIGH); //ensure chemical pin (either ACID or BASE) is on and dumping until cnt is over
+
+            if(mixCount > selectedCaseAdjustment.chemDep_Cnt_Sec){
+                digitalWrite(chemcialRelayPin, LOW); //make sure the relay gets turned off
+                mixCount = 0;
+                //TODO disable timer
+                neutralizingState = MIXING;
+            }
             break;
     }
 }
 
-void flushTank(){}
+pH_caseAdjusments getCaseAdjustment(double currentPH){
+    double upperRange, lowerRange;
+    for(int i = 0; i < totalNumCases; i++){
+        upperRange = (caseArray[i].pH_trigger > 7) ? (caseArray[i].pH_trigger + caseArray[i].range) : caseArray[i].pH_trigger;
+        lowerRange = (caseArray[i].pH_trigger > 7) ? caseArray[i].pH_trigger : (caseArray[i].pH_trigger + caseArray[i].range);
+
+        if(lowerRange >= currentPH && currentPH < upperRange){
+            return caseArray[i];
+        }
+    }
+    //TODO throw error i can't find case
+}
+
+bool tankReadyForFlush = false;
+enum NEUTRALIZING_STATE {MIXING, CHEM_DEP};   //Neutralizing specific state variables (basically sub states), default state should be mixing 
+enum FLUSHING_STATE {IDLE_, FILLING_TANK, EMPTYING_TANK};
+FLUSHING_STATE flushingState = FILLING_TANK;
+
+void flushTank(){
+    //for saftey, ensure acid and base pumps are off
+    digitalWrite(ACID_RELAY_PIN, LOW);
+    digitalWrite(BASE_RELAY_PIN, LOW);
+
+    switch(flushingState){
+        case FILLING_TANK:
+            if((!digitalRead(TANK_HIGH_SENSOR_PIN)) && !digitalRead(OVERFLOW_SENSOR_PIN)){
+                //Ensure valve is open and pump is off - lets fill the tank 
+                digitalWrite(PUMP_RELAY_PIN, LOW); 
+                digitalWrite(VALVE_RELAY_PIN, HIGH);
+            }
+            if((digitalRead(TANK_HIGH_SENSOR_PIN)) || digitalRead(OVERFLOW_SENSOR_PIN)){
+                //close valve immediatly and start emptying tank
+                digitalWrite(VALVE_RELAY_PIN, LOW);
+                flushingState = EMPTYING_TANK;
+            }
+            break;
+        case EMPTYING_TANK:
+            break;
+    }
+    //Make sure the tank is full first, we can skip if overflowing
+    if((!digitalRead(TANK_HIGH_SENSOR_PIN)) && !digitalRead(OVERFLOW_SENSOR_PIN)){
+        //Ensure valve is open and pump is off
+        digitalWrite(PUMP_RELAY_PIN, LOW); //
+        digitalWrite(VALVE_RELAY_PIN, HIGH);
+    }
+
+    if(digitalRead(TANK_HIGH_SENSOR_PIN) || digitalRead(OVERFLOW_SENSOR_PIN)){
+        tankReadyForFlush = true;
+        digitalWrite(VALVE_RELAY_PIN, LOW); //ensure valve is closed for flush procedure
+    }
+
+
+
+     
+}
+
