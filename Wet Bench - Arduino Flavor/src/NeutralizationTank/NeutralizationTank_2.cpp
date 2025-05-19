@@ -3,7 +3,7 @@
 #include <Wire.h>                 // I2C communication library
 #include <LiquidCrystal_I2C.h>    // LCD library for I2C displays
 #include <math.h>                 // Math library for calculations
-
+#include "FspTimer.h"             // FSP library for uno R4
 
 
 
@@ -56,13 +56,33 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
+FspTimer timer_100ms;
+
+
 // ──────────────────────────────────── Neutralization Ctrl Variable Config ────────────────────────────────────────────
 // Global variables for neutralization toggle control
 bool neutralizationEnabled = true;           // Neutralization is enabled by default
 unsigned long neutralizationDisabledTime = 0;  // Timestamp when neutralization was toggled off
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+void overflowSensor_ISR(){
+    //If overflow sensor is triggered, we gotta move to flushing state regardless of PH
+    //Also just double check we arent currently flushhing
+    if(systemState != FLUSHING) {
+        systemState = FLUSHING;
+    }
+}
 
+void highTankSensor_ISR(){
+    //At a full tank and we need to flush, must be neutralized though first
+    if((systemState != FLUSHING) && safe_pH_range(100)){
+        systemState = FLUSHING;
+    }
+}
+
+void timer_100ms_callback(timer_callback_args_t *args){
+    mixCount += 0.1; //incramnt counter
+}
 
 void setup() {
   // Configure pin modes for relays (outputs) and sensors (inputs)
@@ -78,7 +98,7 @@ void setup() {
   // Use internal pull-up resistor for flush button
   pinMode(FLUSH_BUTTON_PIN, INPUT_PULLUP); // DIFF 1
   
-  delay(400);  // Delay for stabilization
+  delay(200);  // Delay for stabilization
   
   // Initialize relay states to LOW (off)
   digitalWrite(MIXING_RELAY_PIN, LOW);
@@ -93,6 +113,23 @@ void setup() {
   // Reserve memory for the sensor response buffer to optimize dynamic memory usage
   phSensorResponseBuffer.reserve(30);
   
+
+  //Setup ISRs
+  attachInterrupt(OVERFLOW_SENSOR_PIN, overflowSensor_ISR, RISING); //Overflow sensor ISR   
+  attachInterrupt(TANK_HIGH_SENSOR_PIN, highTankSensor_ISR, RISING); //High tank sesnsor ISR
+  
+  timer_100ms.begin(
+    TIMER_MODE_PERIODIC,        // mode: perodic interrupt
+    GPT_TIMER,                  // type: general PWM timer
+    0,                          // channel: 0
+    10.0,                       // frequency(in HZ): 10hz ==> 100ms 
+    50.0,                       // duty % (not used for perodic)
+    timer_100ms_callback        // Callback function
+  );
+  timer_100ms.setup_overflow_irq();
+  timer_100ms.start(); // ensure timer isn't running
+  timer_100ms.disable_overflow_irq();
+
   // Initialize LCD once in setup
   lcd.init();
   lcd.backlight();
@@ -111,6 +148,13 @@ enum SYSTEM_STATE {IDLE, NEUTRALIZING, FLUSHING}; //System state enums for the e
 SYSTEM_STATE systemState = IDLE;
 NEUTRALIZING_STATE neutralizingState = MIXING;
 
+bool safe_pH_range(double pH){
+    double pH_UpperSafeRange = 9.5;
+    double pH_LowerSafeRange = 5.5;
+
+    return (pH <= pH_UpperSafeRange) && (pH >= pH_LowerSafeRange);
+}
+
 void loop(){
     //=- TODO -=//
     // Handle watchdog timer
@@ -118,21 +162,24 @@ void loop(){
     // Handle LCD update
     // Handle system disable timeout
     // Handle pH value (regardles of reading in ISR or if system is active) determine system state 
-    double pH_UpperSafeRange = 9.5;
-    double pH_LowerSafeRange = 5.5;
-
+   
     
     //Run system
     if(neutralizationEnabled){
+        //TODO if highTank trigger, and swap to flush, ensure we are in a safe neut range
         switch(systemState){
             case IDLE:
+                //TODO pass in pH
                 //check to see if tank neut/flush is needed (can only be allowed while we know we are idling (flushing not occuring))
-                systemState = (current_pH >= pH_UpperSafeRange && current_PH <= pH_LowerSafeRange) ? NEUTRALIZING : IDLE;
+                systemState =  (safe_pH_range(100))? IDLE : NEUTRALIZING;
                 
                 ensureNeutralSystemState(); //ensure we aren't dumping chemicals or mixing while idling
+                ensureNeutralFlushingState(); //esnure valve is closed and pump is off
                 break;
 
             case NEUTRALIZING:
+                ensureNeutralFlushingState(); //ensure valve is closed and pump is off
+
                 //System state remains in neutralizing until the neutralizeSystem returns true (neutralize done)
                 systemState = neutralizeSystem() ? IDLE : NEUTRALIZING;
                 //TODO check if we want to do some kind of flush after any neutralizing
@@ -161,11 +208,17 @@ void ensureNeutralSystemState(){
     neutralizingState = MIXING; //always make sure we start with mixing first               
 }
 
+void ensureNeutralFlushingState(){
+    digitalWrite(VALVE_RELAY_PIN, LOW); //ensure vlave is off 
+    digitalWrite(PUMP_RELAY_PIN, LOW); //ensure pump is off
+    timer_100ms.disable_overflow_irq(); //ensure clock isr is off. we aren't timing shit right now
+}
 
-int initialMix_MAX_CNT_SEC = 25;  //initial mixingtime before chemicals are applied. Represented in seconds
-int systemMix_MAX_CNT_SEC = 45;  //mixing time between adding more chemicals assuming PH has not been restored.
 
-int mixCount = 0; //Tracking variable for mixing timing
+double initialMix_MAX_CNT_SEC = 25.0;  //initial mixingtime before chemicals are applied. Represented in seconds
+double systemMix_MAX_CNT_SEC = 45.0;  //mixing time between adding more chemicals assuming PH has not been restored.
+
+volatile double mixCount = 0; //Tracking variable for mixing timing
 bool initialMixComplete = false;
 
 struct pH_caseAdjusments{
@@ -196,22 +249,22 @@ pH_caseAdjusments caseArray[totalNumCases] = {
 
 bool neutralizeSystem(){
     //If we are inside the neutralizing state, as saftey ensure required valves and pumps are closed:
-    digitalWrite(VALVE_RELAY_PIN, LOW); //Make sure valve is closed while neutralizing
-    digitalWrite(PUMP_RELAY_PIN, LOW); //Make sure pump is off while neutralizing
-
     switch(neutralizingState){
         case MIXING:
             digitalWrite(MIXING_RELAY_PIN, HIGH); //Start up the mixer, we in the mixing state
             //TODO
             //if timer is disabled enable timer
+            timer_100ms.enable_overflow_irq();
             
             //if initialMixComplete == true, we compare against systemMix, otherweise we compare against initial mix
             //If mix counter is complete, move to chemical deposition, note, we must first return to the main loop
             if(mixCount > (initialMixComplete? systemMix_MAX_CNT_SEC : initialMix_MAX_CNT_SEC)){
                 if(!initialMixComplete) {initialMixComplete = true;} //ensure if this was the initial mix to change timing, could just always set to true (latch that bitch)
-                mixCount = 0;
+                
                 selectedCaseAdjustment = getCaseAdjustment(100); //TODO pass the currentPH
-                //TODO disable timer
+                //TODO disable timer and ensure counter reset.
+                mixCount = 0;
+                timer_100ms.disable_overflow_irq();
 
                 neutralizingState = CHEM_DEP;
                 return false; //We aren't done with neutralizing yet, so keep returning false
@@ -222,14 +275,17 @@ bool neutralizeSystem(){
             digitalWrite(MIXING_RELAY_PIN, LOW); //ensure we aren't mixing while dumping chems
 
             //TODO ensure timer is enabled
+            timer_100ms.enable_overflow_irq(); 
+
             //TODO add back up timeStamp
             int chemcialRelayPin = (selectedCaseAdjustment.pH_trigger > 7)? BASE_RELAY_PIN : ACID_RELAY_PIN; //determine the type of chem we are correcting with (BASE or ACID)
             digitalWrite(chemcialRelayPin, HIGH); //ensure chemical pin (either ACID or BASE) is on and dumping until cnt is over
 
             if(mixCount > selectedCaseAdjustment.chemDep_Cnt_Sec){
                 digitalWrite(chemcialRelayPin, LOW); //make sure the relay gets turned off
+                //disable timer and reset count
+                timer_100ms.disable_overflow_irq();
                 mixCount = 0;
-                //TODO disable timer
                 neutralizingState = MIXING;
                 return true; //We are finally done with the neutralizing, notify main state machine
             }
@@ -256,14 +312,10 @@ FLUSHING_STATE flushingState = FILLING_TANK;
 
 /**
  * Flush tank is responsible for first filling the tank to max volume (if not already) and then flushing
- * entirety. Passes back a boolean on state completion, and internal STATE CHANGES are only allowed on
+ * entirety. Passes back a boolean on state completion, and internal sub STATE CHANGES are only allowed on
  * init, intnternal to the function, and on emergency reset.
  */
 bool flushTank(){
-    //for saftey, ensure acid and base pumps are off
-    digitalWrite(ACID_RELAY_PIN, LOW);
-    digitalWrite(BASE_RELAY_PIN, LOW);
-
     switch(flushingState){
         case FILLING_TANK:
             if((!digitalRead(TANK_HIGH_SENSOR_PIN)) && !digitalRead(OVERFLOW_SENSOR_PIN)){
@@ -275,7 +327,7 @@ bool flushTank(){
                 //close valve immediatly and start emptying tank, we are full and maybe even overflowing
                 digitalWrite(VALVE_RELAY_PIN, LOW);
                 flushingState = EMPTYING_TANK;
-                return true;
+                return false; //we are done filling, but not with flush process, do not return true yet
             }
             return false;
         case EMPTYING_TANK:
@@ -286,7 +338,7 @@ bool flushTank(){
                 //if and when tank low sensor pin is released, the emptying process is done
                 digitalWrite(PUMP_RELAY_PIN, LOW);
                 flushingState = FILLING_TANK;
-                return true;
+                return true; //we are done with entire flush process, notify the main STATE loop.
             }
             return false;
     } 
