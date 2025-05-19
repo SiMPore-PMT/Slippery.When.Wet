@@ -118,31 +118,47 @@ void loop(){
     // Handle LCD update
     // Handle system disable timeout
     // Handle pH value (regardles of reading in ISR or if system is active) determine system state 
+    double pH_UpperSafeRange = 9.5;
+    double pH_LowerSafeRange = 5.5;
 
+    
     //Run system
     if(neutralizationEnabled){
         switch(systemState){
             case IDLE:
-                //prolly better way of doing this (ensure neutralizing vars are reset for next round)
-                mixCount = 0;
-                initialMixComplete = false; //ensure initial Mix time is first mix
-                neutralizingState = MIXING; //always make sure we start with mixing first
-
+                //check to see if tank neut/flush is needed (can only be allowed while we know we are idling (flushing not occuring))
+                systemState = (current_pH >= pH_UpperSafeRange && current_PH <= pH_LowerSafeRange) ? NEUTRALIZING : IDLE;
+                
+                ensureNeutralSystemState(); //ensure we aren't dumping chemicals or mixing while idling
                 break;
 
             case NEUTRALIZING:
-                neutralizeSystem();
+                //System state remains in neutralizing until the neutralizeSystem returns true (neutralize done)
+                systemState = neutralizeSystem() ? IDLE : NEUTRALIZING;
+                //TODO check if we want to do some kind of flush after any neutralizing
                 break;
 
             case FLUSHING:
-                //prolly better way of doing this (ensure neutralizing vars are reset for next round)
-                mixCount = 0;
-                initialMixComplete = false;
-                neutralizingState = MIXING;
-                flushTank();
+                ensureNeutralSystemState(); //just ensure while we are flushign the tank we are not mixing, or dumping chems
+
+                //System state remains in flushing until the tank is empty, then and only then allowed ot return to idle
+                systemState = flushTank() ? IDLE : FLUSHING;
                 break;
         }
     }
+}
+
+/**
+ * Helper/saftey funciton to ensure outputs/vars that are needed to properly handle mixing and neutralizing
+ * are in their "Neutral" Sate
+ */
+void ensureNeutralSystemState(){
+    digitalWrite(ACID_RELAY_PIN, LOW);
+    digitalWrite(BASE_RELAY_PIN, LOW);
+    digitalWrite(MIXING_RELAY_PIN, LOW);
+    mixCount = 0;
+    initialMixComplete = false; //ensure initial Mix time is first mix
+    neutralizingState = MIXING; //always make sure we start with mixing first               
 }
 
 
@@ -153,9 +169,9 @@ int mixCount = 0; //Tracking variable for mixing timing
 bool initialMixComplete = false;
 
 struct pH_caseAdjusments{
-    double pH_trigger; //point at which range search is started. If pH is >7, range adds. If ph <7 range subtracts
-    double range; //range from which the pH case adjustment parameters apply
-    double chemDep_Cnt_Sec; //amount of time to dump acid/base for given case can do half second incraments. Note: chem choice dependent on pH_trigger range (ie >7 acid is used)
+    double pH_trigger;      //point at which range search is started. If pH is >7, range adds. If ph <7 range subtracts
+    double range;           //range from which the pH case adjustment parameters apply
+    double chemDep_Cnt_Sec; //amount of time to dump acid/base for given case can do .1s (100ms) incraments. Note: chem choice dependent on pH_trigger range (ie >7 acid is used)
 };
 
 pH_caseAdjusments selectedCaseAdjustment;
@@ -178,9 +194,14 @@ pH_caseAdjusments caseArray[totalNumCases] = {
  
 
 
-void neutralizeSystem(){
+bool neutralizeSystem(){
+    //If we are inside the neutralizing state, as saftey ensure required valves and pumps are closed:
+    digitalWrite(VALVE_RELAY_PIN, LOW); //Make sure valve is closed while neutralizing
+    digitalWrite(PUMP_RELAY_PIN, LOW); //Make sure pump is off while neutralizing
+
     switch(neutralizingState){
         case MIXING:
+            digitalWrite(MIXING_RELAY_PIN, HIGH); //Start up the mixer, we in the mixing state
             //TODO
             //if timer is disabled enable timer
             
@@ -193,10 +214,13 @@ void neutralizeSystem(){
                 //TODO disable timer
 
                 neutralizingState = CHEM_DEP;
+                return false; //We aren't done with neutralizing yet, so keep returning false
             }
-            break;
+            return false;
 
         case CHEM_DEP:
+            digitalWrite(MIXING_RELAY_PIN, LOW); //ensure we aren't mixing while dumping chems
+
             //TODO ensure timer is enabled
             //TODO add back up timeStamp
             int chemcialRelayPin = (selectedCaseAdjustment.pH_trigger > 7)? BASE_RELAY_PIN : ACID_RELAY_PIN; //determine the type of chem we are correcting with (BASE or ACID)
@@ -207,8 +231,9 @@ void neutralizeSystem(){
                 mixCount = 0;
                 //TODO disable timer
                 neutralizingState = MIXING;
+                return true; //We are finally done with the neutralizing, notify main state machine
             }
-            break;
+            return false;
     }
 }
 
@@ -225,12 +250,16 @@ pH_caseAdjusments getCaseAdjustment(double currentPH){
     //TODO throw error i can't find case
 }
 
-bool tankReadyForFlush = false;
-enum NEUTRALIZING_STATE {MIXING, CHEM_DEP};   //Neutralizing specific state variables (basically sub states), default state should be mixing 
-enum FLUSHING_STATE {IDLE_, FILLING_TANK, EMPTYING_TANK};
+enum NEUTRALIZING_STATE {MIXING, CHEM_DEP};         //Neutralizing specific state variables (basically sub states), default state should be mixing 
+enum FLUSHING_STATE {FILLING_TANK, EMPTYING_TANK};  //Flushing specific state variables (more sub states), defualt state should be filling
 FLUSHING_STATE flushingState = FILLING_TANK;
 
-void flushTank(){
+/**
+ * Flush tank is responsible for first filling the tank to max volume (if not already) and then flushing
+ * entirety. Passes back a boolean on state completion, and internal STATE CHANGES are only allowed on
+ * init, intnternal to the function, and on emergency reset.
+ */
+bool flushTank(){
     //for saftey, ensure acid and base pumps are off
     digitalWrite(ACID_RELAY_PIN, LOW);
     digitalWrite(BASE_RELAY_PIN, LOW);
@@ -243,28 +272,23 @@ void flushTank(){
                 digitalWrite(VALVE_RELAY_PIN, HIGH);
             }
             if((digitalRead(TANK_HIGH_SENSOR_PIN)) || digitalRead(OVERFLOW_SENSOR_PIN)){
-                //close valve immediatly and start emptying tank
+                //close valve immediatly and start emptying tank, we are full and maybe even overflowing
                 digitalWrite(VALVE_RELAY_PIN, LOW);
                 flushingState = EMPTYING_TANK;
+                return true;
             }
-            break;
+            return false;
         case EMPTYING_TANK:
-            break;
-    }
-    //Make sure the tank is full first, we can skip if overflowing
-    if((!digitalRead(TANK_HIGH_SENSOR_PIN)) && !digitalRead(OVERFLOW_SENSOR_PIN)){
-        //Ensure valve is open and pump is off
-        digitalWrite(PUMP_RELAY_PIN, LOW); //
-        digitalWrite(VALVE_RELAY_PIN, HIGH);
-    }
-
-    if(digitalRead(TANK_HIGH_SENSOR_PIN) || digitalRead(OVERFLOW_SENSOR_PIN)){
-        tankReadyForFlush = true;
-        digitalWrite(VALVE_RELAY_PIN, LOW); //ensure valve is closed for flush procedure
-    }
-
-
-
-     
+            digitalWrite(VALVE_RELAY_PIN, LOW); //saftey, make sure valve is closed
+            digitalWrite(PUMP_RELAY_PIN, HIGH); //make sure the pup is active and running
+           
+            if(!digitalRead(TANK_LOW_SENSOR_PIN)){
+                //if and when tank low sensor pin is released, the emptying process is done
+                digitalWrite(PUMP_RELAY_PIN, LOW);
+                flushingState = FILLING_TANK;
+                return true;
+            }
+            return false;
+    } 
 }
 
