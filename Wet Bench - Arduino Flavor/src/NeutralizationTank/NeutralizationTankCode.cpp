@@ -238,6 +238,7 @@ void adjustPH() {
         wdt_reset();
       #endif
       break;
+
   }
 }
 
@@ -362,7 +363,7 @@ void handleFlushButton() {
 }
 
 
-
+enum 
 /**
  * Reads the pH value from the sensor using SoftwareSerial communication.
  * Sends a command to request a reading and parses the returned value.
